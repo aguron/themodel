@@ -97,49 +97,169 @@
 %       Tanaka, J.W., Kaiser, M.D., Butler, S., & Le Grand, R.
 %       (2011) Mixed emotions: Holistic and analytic perception
 %       of facial expressions. Cognition & Emotion
-%
-%   Information on
 
-%% Include information on composite faces labels
 
+%%
+%%%%%%%%%%%%%%%%%%%
+% CLEAR WORKSPACE %
+%%%%%%%%%%%%%%%%%%%
+clear;
+
+%%%%%%%%%%%%%%%%%%%%%%
+% PROFILING COMMANDS %
+%%%%%%%%%%%%%%%%%%%%%%
+monitorTime = 0;
+if (monitorTime == 1)
+    profile clear
+    profile on
+end
+
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%
+% CONSTANTS AND ARRAYS %
+%%%%%%%%%%%%%%%%%%%%%%%%
+cd([pwd, '/Composite Face Simulations'])
+defineconstants
+initializearrays
+
+%%
+%%%%%%%%%%%%%%%%%
+% GABOR FILTERS %
+%%%%%%%%%%%%%%%%%
+cd ..
+cd([pwd, '/Gabor Filtering'])
+% create
+gaborFilters = gaborfilterset();
+% save
 save gaborFilters gaborFilters
 
+%%%%%%%%%%%%%%%%%%
+% GABOR FEATURES %
+%%%%%%%%%%%%%%%%%%
+% load set of Gabor filters if necessary
+if (any(strcmp(who,'gaborFilters')) == 0)
+    load('gaborFilters.mat', 'gaborFilters');
+end
+applygaborfilters2images % User needs to procure image dataset
+loadgaborfeatures
+
+% display Gabor filters
+% gaborfiltersimage % imshow() does not work on server
+% save imageGabors imageGabors
+
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% PREPARE MASKS FOR SIMULATING ATTENTION %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+cd ..
+cd([pwd, '/Composite Face Simulations'])
+attentionmasks
+
+%%
+%%%%%%%%%%%%%%%
+% SIMULATIONS %
+%%%%%%%%%%%%%%%
+% Indexes
+%   i_r - index of experimental run
+%   i_t - index of image subset used for testing/experiments
+%   i_c - index of image subset used for cross-validation
+for i_r = 1:n.runs
+    % Each image subset is used for testing N.REPEATS times
+    i_s = kron((1:n.subsets),ones(1,n.repeats));
+    i_t = i_s(i_r);
+
+    % Current iteration on a particular subset
+    i_i = mod(i_r - 1, n.repeats) + 1;
+    
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % DISPLAY EXPERIMENT RUN NUMBER %
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    disp(['Experiment Run ', num2str(i_r), ':']);
+
+    %%%%%%%%%%%%%%%%%%%%%%%%
+    % TRAINING PERCEPTRONS %
+    %%%%%%%%%%%%%%%%%%%%%%%%
+    % index for perceptrons
+    i_p = 0;
+    % array of perceptrons
+    perceptronFinal = cell(n.perceptrons, 1);
+    for i_c = 1:n.subsets
+        % image subsets for testing/experiments and
+        % cross-validation must differ
+        if i_c ~= i_t
             %%
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-            %        PRINCIPAL COMPONENTS ANALYSIS (PCA)        %
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-            scale.train = 1; % normalization factor for training set
-            GFF_train = zscore(GFF_train, scale.train);
-
-            eigenvalueSumThreshold = 0.9;
-            GFF_PC =...
-                principalcomponentsanalysis(GFF_train,...
-                                            eigenvalueSumThreshold);
-
-            %%
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-            % PROJECTION WITH PCA MATRIX (TRAINING) %
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-            % '' - Normalize ONLY after projection
-            X_train = projectonPC(GFF_train, GFF_PC, scale.train, '');
-
-            % 'b' - Normalize before and after projection, and
-            % according to the number of validation data vectors
-            scale.validate = size(GFF_validate,1)/size(GFF_train,1);
-            X_validate =...
-                projectonPC(GFF_validate, GFF_PC, scale.validate, 'b');
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % DISPLAY PERCEPTRON NUMBER %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            i_p = i_p + 1;  % next perceptron in the ensemble
+            disp(['Perception ', num2str(i_p)]);
             
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % GABOR FILTER FEATURES FOR TRAINING %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            preparetrainingfeatures
+            
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % PRINCIPAL COMPONENTS ANALYSIS (PCA) %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            cd ..
+            cd([pwd, '/Principal Components Analysis'])
+            % normalization factor for training set
+            scale.training = 1;
+            gaborFeatures.training =...
+                centerandnormalize(gaborFeatures.training,...
+                                   scale.training);
+            principalComponents =...
+                principalcomponentsanalysis(gaborFeatures.training,...
+                                            eigenvalueSumThreshold);
+            
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % GABOR FILTER FEATURES FOR CROSS-VALIDATION %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            cd ..
+            cd([pwd, '/Composite Face Simulations'])
+            preparevalidationfeatures
+            
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % PROJECTION ON PRINCIPAL COMPONENTS (TRAINING) %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            cd ..
+            cd([pwd, '/Principal Components Analysis'])
+            % 'a' - Normalize ONLY after projection
+            perceptronInput.training =...
+                projectonbasis(gaborFeatures.training,...
+                               principalComponents,...
+                               scale.training,...
+                               'a');
+
+            % Adjust for the difference in size between the data
+            % sets for training and cross-validation
+            scale.validation =...
+                size(gaborFeatures.validation,1)/...
+                size(gaborFeatures.training,1);
+            % 'b' - Normalize before and after projection, and
+            % according to the number of validation data vectors            
+            perceptronInput.validation =...
+                projectonbasis(gaborFeatures.validation,...
+                               principalComponents,...
+                               scale.validation,...
+                               'b');
+
             %%
             %%%%%%%%%%%%
             % TRAINING %
             %%%%%%%%%%%%
+            cd ..
+            cd([pwd, '/Composite Face Simulations'])
             trainingtargets
             
+            cd ..
+            cd([pwd, '/Neural Network'])
             % Initialize perceptron
             % (Supports perceptrons with up to one hidden layer
             %  at present)
             % Number of hidden layer units
-            perceptronInitial.nHiddenUnits = 10;
+            perceptronInitial.nHiddenUnits = 0;
             % Weights:
             %   These can be initialized (please see
             %   PERCEPTRONLEARN for details) or left
@@ -163,33 +283,98 @@ save gaborFilters gaborFilters
             
             % Training proper
             fprintf(1,'%s\n', 'Start of training');
-            perceptronFinal{i_NetInst} =...
-                perceptronlearn(X_train, Y_train,... 
-                                X_validate, Y_validate,...
+            perceptronFinal{i_p} =...
+                perceptronlearn(perceptronInput.training,...
+                                perceptronTarget.training,... 
+                                perceptronInput.validation,...
+                                perceptronTarget.validation,...
                                 perceptronInitial,...
                                 trainParameters);
             fprintf(1,'%s\n', 'End of training');
+            disp(' ');
+            
+            %%
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % GABOR FILTER FEATURES FOR TESTING AND SIMULATIONS %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            cd ..
+            cd([pwd, '/Composite Face Simulations'])
+            preparetestingexperimentfeatures
 
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % PROJECTION ON PRINCIPAL COMPONENTS AND SORTING OF STIMULI %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            projectandsortstimuli
+
+        end
+    end
 
     %%%%%%%%%%%
     % TESTING %
     %%%%%%%%%%%
     testingtargets
 
+    cd ..
+    cd([pwd, '/Neural Network'])
+
     fprintf(1,'%s\n', 'Start of testing');
-    Class.Test = perceptronclassify(X_test, Y_test,...
-                                    perceptronFinal,...
-                                    trainParameters.noise,...
-                                    1:7, 'y');
+    perceptronOutput.testing =...
+        perceptronclassify(perceptronInput.testing,...
+                           perceptronTarget.testing,...
+                           perceptronFinal,...
+                           trainParameters.noise,...
+                           category.testing,...
+                           'y');
     fprintf(1,'%s\n', 'End of testing');
     disp(' ');
 
+    cd ..
+    cd([pwd, '/Composite Face Simulations'])
+
     testingresults
-    
+
     %%%%%%%%%%%%%%%
     % EXPERIMENTS %
     %%%%%%%%%%%%%%%
+    
+    cd ..
+    cd([pwd, '/Composite Face Simulations'])
+
     experiments
-   e
-    
-    
+    experimentsresults
+end
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% DATA ANALYSIS AND VISUALIZATION %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+cd ..
+cd([pwd, '/Data Analysis and Visualization'])
+
+dataanalysis
+% datavisualization % imshow() does not work on server
+
+%%
+%%%%%%%%%%%%%%%%%%%%%%
+% PROFILING COMMANDS %
+%%%%%%%%%%%%%%%%%%%%%%
+if (monitorTime == 1)
+    performance = profile('info');
+
+    for i = 1:size({performance.FunctionTable.TotalTime},2)
+        FunctionName = {performance.FunctionTable.FunctionName};
+        TotalTime = {performance.FunctionTable.TotalTime};
+        disp([FunctionName{i}, '   ', num2str(TotalTime{i})]);
+    end
+    clear i
+
+    profile off
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% SAVE DATA AND TIDY UP %
+%%%%%%%%%%%%%%%%%%%%%%%%%
+savedata
+
+close all hidden
+clear all
+cd ..
